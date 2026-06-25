@@ -6,8 +6,9 @@ import {
 import { loadTournament } from './api.js'
 import { REFRESH_MS } from './config.js'
 import { buildViews, ROUND_META, fmtDate, fmtTime, fmtDayKey } from './data.js'
+import { buildBracket, resolveNodeTeams, winnerTeamOf, realWinnerId, prunePicks } from './bracket.js'
 
-const PRED_KEY = 'wc2026_predictions'
+const PRED_KEY = 'wc2026_bracket_picks'
 
 // ── Shared bits ─────────────────────────────────────────────────────────────
 function Flag({ team, className = 'h-4 w-6' }) {
@@ -369,168 +370,131 @@ function roundLabel(key) {
   const meta = ROUND_META.find((r) => r.key === key)
   return meta ? meta.title : key
 }
-function winnerId(m) {
-  if (m.state !== 'post') return null
-  if (m.home.winner) return m.home.id
-  if (m.away.winner) return m.away.id
-  if (m.home.score != null && m.away.score != null) {
-    if (m.home.score > m.away.score) return m.home.id
-    if (m.away.score > m.home.score) return m.away.id
-  }
-  return null
+function koRange(n, p) {
+  return Array.from({ length: n }, (_, i) => `${p}-${i + 1}`)
+}
+const ROUND_COLS = [
+  { key: 'r32', title: 'Round of 32', keys: koRange(16, 'r32') },
+  { key: 'r16', title: 'Round of 16', keys: koRange(8, 'r16') },
+  { key: 'qf', title: 'Quarter-finals', keys: koRange(4, 'qf') },
+  { key: 'sf', title: 'Semi-finals', keys: ['sf-1', 'sf-2'] },
+  { key: 'final', title: 'Final', keys: ['final'] },
+]
+function prettyFeeder(key) {
+  const [r, n] = key.split('-')
+  return `${({ r32: 'R32', r16: 'R16', qf: 'QF', sf: 'SF' })[r] || r} ${n}`
+}
+function slotLabel(node, which) {
+  const slot = which === 'a' ? node.slotA : node.slotB
+  if (!slot) return 'TBD'
+  if (node.round === 'r32') return slot.label || 'TBD'
+  return `${slot.side === 'loser' ? 'Loser' : 'Winner'} ${prettyFeeder(slot.feeder)}`
 }
 
-function KOTeam({ team, picked, isOther, locked, correct, onPick }) {
-  // A concrete team always carries a logo; ESPN's bracket placeholders
-  // (e.g. "Group F 2nd Place") don't — those aren't predictable.
-  const real = !!(team && team.logo && team.name !== 'TBD')
-  const clickable = real && !locked
-  let cls
-  if (correct === true) cls = 'bg-emerald-500/20 ring-2 ring-emerald-400/70 text-white'
-  else if (correct === false) cls = 'bg-slate-800/40 ring-1 ring-slate-700/50 text-slate-400 line-through decoration-slate-500'
-  else if (picked) cls = 'bg-gradient-to-r from-violet-500/30 to-fuchsia-500/20 ring-2 ring-violet-400/70 text-white shadow-lg shadow-violet-900/30'
-  else if (isOther) cls = 'bg-slate-800/30 text-slate-400 ring-1 ring-slate-700/50'
-  else if (clickable) cls = 'bg-slate-800/50 text-slate-200 ring-1 ring-slate-700/60 hover:ring-violet-400/60 hover:bg-slate-800'
-  else cls = 'bg-slate-800/20 text-slate-500 ring-1 ring-dashed ring-slate-700/50 cursor-not-allowed'
+function BracketTeam({ team, label, score, picked, decided, isWinner, isLost, onPick }) {
+  const clickable = team && !decided
+  let nameCls = 'text-slate-500'
+  if (isWinner) nameCls = 'text-white'
+  else if (isLost) nameCls = 'text-slate-600 line-through decoration-slate-600'
+  else if (team) nameCls = 'text-slate-200'
   return (
-    <button type="button" disabled={!clickable} onClick={onPick}
-      className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition ${cls} ${picked && correct === null ? 'animate-pop' : ''}`}>
-      <Flag team={real ? team : null} className="h-5 w-7" />
-      <span className="min-w-0 flex-1 truncate text-sm font-semibold">{real ? team.name : 'TBD'}</span>
-      {correct === true && <Check className="h-4 w-4 text-emerald-400" />}
-      {correct === false && <X className="h-4 w-4 text-slate-500" />}
-      {picked && correct === null && (
-        <span className="flex items-center gap-1 rounded-full bg-violet-400/90 px-1.5 py-0.5 text-[9px] font-bold uppercase text-violet-950">
-          <Sparkles className="h-3 w-3" /> Pick
-        </span>
-      )}
+    <button
+      type="button"
+      disabled={!clickable}
+      onClick={onPick}
+      className={`flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition ${clickable ? 'hover:bg-slate-700/40' : ''} ${picked && !decided ? 'bg-violet-500/25 ring-1 ring-violet-400/60' : ''} ${isWinner ? 'bg-emerald-500/15 ring-1 ring-emerald-400/40' : ''}`}
+    >
+      {team ? <Flag team={team} className="h-3.5 w-5" /> : <span className="h-3.5 w-5 shrink-0 rounded-[2px] bg-slate-700/40" />}
+      <span className={`min-w-0 flex-1 truncate text-xs font-semibold ${nameCls}`}>{team ? team.name : label}</span>
+      {score != null && <span className="font-mono text-xs font-bold tabular-nums text-slate-300">{score}</span>}
+      {picked && !decided && <Sparkles className="h-3 w-3 shrink-0 text-violet-300" />}
+      {isWinner && <Check className="h-3 w-3 shrink-0 text-emerald-400" />}
     </button>
   )
 }
 
-function KOMatch({ m, pick, onPick }) {
-  const locked = m.state !== 'pre'
-  const win = winnerId(m)
-  const gradeFor = (id) => (win && pick ? (pick === win ? id === win : id === pick ? false : null) : null)
+function BracketCell({ nodeKey, nodes, preds, onPick, cache }) {
+  const node = nodes[nodeKey]
+  if (!node) return null
+  const { a, b } = resolveNodeTeams(nodeKey, nodes, preds, cache)
+  const winId = realWinnerId(node)
+  const decided = !!winId
+  const pick = preds[nodeKey]
+  const e = node.espn
+  const live = e && e.state === 'in'
+  const showScore = e && e.state !== 'pre'
   return (
-    <div className="rounded-2xl border border-slate-700/50 bg-slate-900/50 p-3 shadow-md shadow-black/20 backdrop-blur">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{roundLabel(m.round)}</span>
-        <StatusPill m={m} />
-      </div>
-      {locked && (m.home.score != null) && (
-        <div className="mb-2 flex justify-center"><ScoreOrVs m={m} /></div>
+    <div className={`rounded-lg border bg-slate-900/70 p-1 shadow-sm ${live ? 'border-rose-500/40' : 'border-slate-700/50'}`}>
+      <BracketTeam
+        team={a} label={slotLabel(node, 'a')} score={showScore ? e.home.score : null}
+        picked={pick && a && pick === a.id} decided={decided}
+        isWinner={decided && a && winId === a.id} isLost={decided && a && winId !== a.id}
+        onPick={() => a && onPick(nodeKey, a.id)}
+      />
+      <div className="my-0.5 border-t border-slate-700/40" />
+      <BracketTeam
+        team={b} label={slotLabel(node, 'b')} score={showScore ? e.away.score : null}
+        picked={pick && b && pick === b.id} decided={decided}
+        isWinner={decided && b && winId === b.id} isLost={decided && b && winId !== b.id}
+        onPick={() => b && onPick(nodeKey, b.id)}
+      />
+      {e && (
+        <div className="px-1 pt-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+          {live ? <span className="text-rose-400">● {e.status || 'Live'}</span> : e.state === 'post' ? (e.status || 'Final') : `${fmtDate(e.date)} · ${fmtTime(e.date)}`}
+        </div>
       )}
-      <div className="space-y-1.5">
-        <KOTeam team={m.home} picked={pick === m.home.id} isOther={pick && pick !== m.home.id} locked={locked} correct={gradeFor(m.home.id)} onPick={() => onPick(m.id, m.home.id)} />
-        <div className="flex items-center justify-center"><span className="text-[10px] font-bold uppercase tracking-widest text-slate-600">vs</span></div>
-        <KOTeam team={m.away} picked={pick === m.away.id} isOther={pick && pick !== m.away.id} locked={locked} correct={gradeFor(m.away.id)} onPick={() => onPick(m.id, m.away.id)} />
-      </div>
-      <div className="mt-2.5 border-t border-slate-700/40 pt-2"><VenueLine m={m} /></div>
     </div>
   )
 }
 
-function PredictionSummary({ rounds, preds }) {
-  const koMatches = rounds.flatMap((r) => r.matches)
-  const predictable = koMatches.filter((m) => m.home.logo && m.away.logo)
-  const made = koMatches.filter((m) => preds[m.id]).length
+function KnockoutView({ nodes, preds, onPick, onReset }) {
+  if (!nodes) return <Empty>Knockout fixtures will appear here once the bracket is set after the group stage.</Empty>
+  const cache = {}
+  const champ = winnerTeamOf('final', nodes, preds, cache)
+  const allKeys = ROUND_COLS.flatMap((c) => c.keys).concat('third')
+  const made = allKeys.filter((k) => preds[k]).length
   let correct = 0, decided = 0
-  for (const m of koMatches) {
-    const w = winnerId(m)
-    if (w && preds[m.id]) { decided++; if (preds[m.id] === w) correct++ }
+  for (const k of allKeys) {
+    const w = realWinnerId(nodes[k])
+    if (w && preds[k]) { decided++; if (preds[k] === w) correct++ }
   }
-  const finalM = rounds.find((r) => r.key === 'final')?.matches[0]
-  const champId = finalM ? preds[finalM.id] : null
-  const champ = champId ? koMatches.flatMap((m) => [m.home, m.away]).find((t) => t.id === champId) : null
-  const denom = predictable.length || koMatches.length
-
   return (
-    <div className="rounded-2xl border border-violet-500/30 bg-gradient-to-br from-violet-600/15 via-slate-900/40 to-fuchsia-600/10 p-4 shadow-lg shadow-violet-900/20">
-      <div className="mb-3 flex items-center gap-2">
-        <Target className="h-5 w-5 text-violet-300" />
-        <h3 className="text-base font-extrabold text-white">Your Predictions</h3>
-        <span className="ml-auto rounded-full bg-violet-500/20 px-2.5 py-0.5 text-xs font-bold text-violet-200 ring-1 ring-violet-400/40">{made}{denom ? ` / ${denom}` : ''}</span>
-      </div>
-      {decided > 0 && (
-        <div className="mb-3 inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-300 ring-1 ring-emerald-500/30">
-          <Check className="h-3.5 w-3.5" /> {correct} of {decided} correct so far
-        </div>
-      )}
-      <div className="mb-4 flex items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3">
-        <Crown className="h-6 w-6 shrink-0 text-amber-300" />
-        <div className="min-w-0">
-          <div className="text-[10px] font-bold uppercase tracking-wide text-amber-300/80">Predicted Champion</div>
-          {champ ? (
-            <div className="flex items-center gap-2 text-lg font-black text-white"><Flag team={champ} className="h-5 w-7" /><span className="truncate">{champ.name}</span></div>
-          ) : <div className="text-sm text-slate-400">Pick the winner of the Final 🏆</div>}
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-700/50 bg-slate-900/40 p-3">
+        <p className="text-sm text-slate-300">
+          <span className="font-semibold text-white">Tap a team to predict</span> — winners flow forward through the bracket.
+          {decided > 0 && <span className="ml-1 font-semibold text-emerald-300">{correct}/{decided} correct.</span>}
+          {made > 0 && decided === 0 && <span className="ml-1 text-slate-400">{made} {made === 1 ? 'pick' : 'picks'} made.</span>}
+        </p>
+        <div className="flex items-center gap-2">
+          {champ && (
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/40 bg-amber-400/10 px-2.5 py-1 text-xs font-bold text-amber-200">
+              <Crown className="h-4 w-4" /> {champ.name}
+            </span>
+          )}
+          <button onClick={onReset} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20">
+            <RotateCcw className="h-4 w-4" /> Reset
+          </button>
         </div>
       </div>
-      <div className="space-y-3">
-        {rounds.map((round) => {
-          const picks = round.matches.filter((m) => preds[m.id])
-          if (!picks.length) return null
-          return (
-            <div key={round.key}>
-              <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">{round.icon} {round.title}</div>
-              <div className="flex flex-wrap gap-1.5">
-                {picks.map((m) => {
-                  const t = [m.home, m.away].find((x) => x.id === preds[m.id])
-                  const w = winnerId(m)
-                  const ok = w ? preds[m.id] === w : null
-                  return (
-                    <span key={m.id} className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium ring-1 ${ok === true ? 'bg-emerald-500/15 text-emerald-100 ring-emerald-500/30' : ok === false ? 'bg-slate-700/30 text-slate-400 ring-slate-600/40 line-through' : 'bg-violet-500/15 text-violet-100 ring-violet-500/30'}`}>
-                      <Flag team={t} className="h-3 w-[18px]" /> {t ? t.name : ''}
-                    </span>
-                  )
-                })}
+
+      <div className="bracket-scroll overflow-auto rounded-2xl border border-slate-700/50 bg-slate-900/30 p-3" style={{ maxHeight: '80vh' }}>
+        <div className="flex min-w-max gap-3 sm:gap-4" style={{ height: 920 }}>
+          {ROUND_COLS.map((col) => (
+            <div key={col.key} className="flex w-40 shrink-0 flex-col sm:w-44">
+              <div className="mb-2 text-center text-[11px] font-bold uppercase tracking-wide text-slate-400">{col.title}</div>
+              <div className="flex flex-1 flex-col justify-around gap-2">
+                {col.keys.map((k) => <BracketCell key={k} nodeKey={k} nodes={nodes} preds={preds} onPick={onPick} cache={cache} />)}
               </div>
             </div>
-          )
-        })}
-        {made === 0 && <p className="text-sm text-slate-400">Tap a team in any knockout match to predict the winner. Picks are saved on this device and graded against the real result.</p>}
-      </div>
-    </div>
-  )
-}
-
-function KnockoutView({ rounds, preds, onPick, onReset, showUpcoming, setShowUpcoming }) {
-  if (!rounds.length) {
-    return <Empty>Knockout fixtures will appear here once the bracket is set after the group stage.</Empty>
-  }
-  return (
-    <div className="grid gap-5 lg:grid-cols-[1fr_340px]">
-      <div className="order-2 space-y-7 lg:order-1">
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-700/50 bg-slate-900/40 p-3">
-          <p className="text-sm text-slate-300"><span className="font-semibold text-white">Predict the winners.</span> Picks lock at kickoff and are graded against the real result.</p>
-          <button onClick={() => setShowUpcoming((v) => !v)}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${showUpcoming ? 'bg-sky-500/20 text-sky-300 ring-1 ring-sky-500/40' : 'border border-slate-600/60 text-slate-400 hover:bg-slate-800'}`}>
-            {showUpcoming ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />} Matches
-          </button>
+          ))}
         </div>
-        {showUpcoming ? (
-          <div className="space-y-7">
-            {rounds.map((round) => (
-              <section key={round.key}>
-                <div className="mb-3 flex items-center gap-2">
-                  <span className="text-xl">{round.icon}</span>
-                  <h3 className="text-lg font-extrabold text-white">{round.title}</h3>
-                  <span className="rounded-full bg-slate-800/60 px-2 py-0.5 text-[11px] font-semibold text-slate-400">{round.matches.length} {round.matches.length === 1 ? 'match' : 'matches'}</span>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  {round.matches.map((m) => <KOMatch key={m.id} m={m} pick={preds[m.id]} onPick={onPick} />)}
-                </div>
-              </section>
-            ))}
-          </div>
-        ) : <Empty>Matches hidden. Toggle them back on to make predictions.</Empty>}
       </div>
-      <div className="order-1 lg:order-2">
-        <div className="space-y-3 lg:sticky lg:top-4">
-          <PredictionSummary rounds={rounds} preds={preds} />
-          <button onClick={onReset} className="flex w-full items-center justify-center gap-2 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/20">
-            <RotateCcw className="h-4 w-4" /> Reset all predictions
-          </button>
+
+      <div className="rounded-2xl border border-slate-700/50 bg-slate-900/40 p-3">
+        <div className="mb-2 text-sm font-bold text-white">🥉 Third-place play-off</div>
+        <div className="max-w-xs">
+          <BracketCell nodeKey="third" nodes={nodes} preds={preds} onPick={onPick} cache={cache} />
         </div>
       </div>
     </div>
@@ -614,8 +578,14 @@ export default function App() {
   useEffect(() => { localStorage.setItem(PRED_KEY, JSON.stringify(preds)) }, [preds])
 
   const views = useMemo(() => (feed ? buildViews(feed.matches) : null), [feed])
+  const nodes = useMemo(() => (feed && views ? buildBracket(feed.matches, views.groups) : null), [feed, views])
 
-  const onPick = (matchId, teamId) => setPreds((p) => ({ ...p, [matchId]: p[matchId] === teamId ? undefined : teamId }))
+  const onPick = (nodeKey, teamId) => setPreds((p) => {
+    const next = { ...p }
+    if (next[nodeKey] === teamId) delete next[nodeKey]
+    else next[nodeKey] = teamId
+    return nodes ? prunePicks(nodes, next) : next
+  })
   const onReset = () => { if (window.confirm('Clear all knockout predictions?')) setPreds({}) }
 
   return (
@@ -655,7 +625,7 @@ export default function App() {
           <>
             {tab === 'groups' && <GroupsView groups={views.groups} showCompleted={showCompleted} setShowCompleted={setShowCompleted} />}
             {tab === 'schedule' && <ScheduleView schedule={views.schedule} now={now} />}
-            {tab === 'knockouts' && <KnockoutView rounds={views.rounds} preds={preds} onPick={onPick} onReset={onReset} showUpcoming={showUpcoming} setShowUpcoming={setShowUpcoming} />}
+            {tab === 'knockouts' && <KnockoutView nodes={nodes} preds={preds} onPick={onPick} onReset={onReset} />}
           </>
         )}
       </main>
