@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Trophy, Calendar, CalendarDays, MapPin, ChevronDown, Clock, RotateCcw,
-  Eye, EyeOff, Sparkles, Crown, Target, Radio, RefreshCw, AlertTriangle, Check, X,
+  Eye, EyeOff, Sparkles, Crown, Target, Radio, RefreshCw, AlertTriangle, Check, X, Share2,
 } from 'lucide-react'
 import { loadTournament } from './api.js'
 import { REFRESH_MS } from './config.js'
 import { buildViews, ROUND_META, fmtDate, fmtTime, fmtDayKey } from './data.js'
-import { buildBracket, resolveNodeTeams, winnerTeamOf, realWinnerId, prunePicks, FEEDERS } from './bracket.js'
+import { buildBracket, resolveNodeInfo, winnerTeamOf, realWinnerId, prunePicks, FEEDERS } from './bracket.js'
 
 const PRED_KEY = 'wc2026_bracket_picks'
 
@@ -453,7 +453,11 @@ const LAYOUT = (() => {
       const midX = childRight + HGAP / 2
       const parentLeft = colX(round)
       for (const f of [a, b]) {
-        connectors.push({ f, d: `M${childRight},${cy[f]} H${midX} V${cy[parent]} H${parentLeft}` })
+        connectors.push({
+          f,
+          d: `M${childRight},${cy[f]} H${midX} V${cy[parent]} H${parentLeft}`,
+          pts: [[childRight, cy[f]], [midX, cy[f]], [midX, cy[parent]], [parentLeft, cy[parent]]],
+        })
       }
     }
   }
@@ -472,22 +476,26 @@ function slotLabel(node, which) {
   return `${slot.side === 'loser' ? 'Loser' : 'Winner'} ${prettyFeeder(slot.feeder)}`
 }
 
-function BracketTeam({ team, label, score, picked, decided, isWinner, isLost, onPick }) {
+function BracketTeam({ team, label, score, source, picked, decided, isWinner, isLost, onPick }) {
   const clickable = team && !decided
+  const predicted = source === 'pred' // got here via your prediction (not a real result yet)
   let nameCls = 'text-slate-500'
-  if (isWinner) nameCls = 'text-white'
+  if (isWinner) nameCls = 'text-emerald-200'
   else if (isLost) nameCls = 'text-slate-600 line-through decoration-slate-600'
+  else if (picked) nameCls = 'text-white'
+  else if (predicted) nameCls = 'text-violet-300'
   else if (team) nameCls = 'text-slate-200'
   return (
     <button
       type="button"
       disabled={!clickable}
       onClick={onPick}
-      className={`flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition ${clickable ? 'hover:bg-slate-700/40' : ''} ${picked && !decided ? 'bg-violet-500/25 ring-1 ring-violet-400/60' : ''} ${isWinner ? 'bg-emerald-500/15 ring-1 ring-emerald-400/40' : ''}`}
+      className={`flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition ${clickable ? 'hover:bg-slate-700/40' : ''} ${picked && !decided ? 'bg-violet-500/25 ring-1 ring-violet-400/60' : ''} ${isWinner ? 'bg-emerald-500/20 ring-1 ring-emerald-400/50' : ''}`}
     >
       {team ? <Flag team={team} className="h-3.5 w-5" /> : <span className="h-3.5 w-5 shrink-0 rounded-[2px] bg-slate-700/40" />}
       <span className={`min-w-0 flex-1 truncate text-xs font-semibold ${nameCls}`}>{team ? team.name : label}</span>
       {score != null && <span className="font-mono text-xs font-bold tabular-nums text-slate-300">{score}</span>}
+      {predicted && !picked && !decided && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-400" title="Your prediction" />}
       {picked && !decided && <Sparkles className="h-3 w-3 shrink-0 text-violet-300" />}
       {isWinner && <Check className="h-3 w-3 shrink-0 text-emerald-400" />}
     </button>
@@ -497,7 +505,8 @@ function BracketTeam({ team, label, score, picked, decided, isWinner, isLost, on
 function BracketCell({ nodeKey, nodes, preds, onPick, cache }) {
   const node = nodes[nodeKey]
   if (!node) return null
-  const { a, b } = resolveNodeTeams(nodeKey, nodes, preds, cache)
+  const { a: ai, b: bi } = resolveNodeInfo(nodeKey, nodes, preds, cache)
+  const a = ai.team, b = bi.team
   const winId = realWinnerId(node)
   const decided = !!winId
   const pick = preds[nodeKey]
@@ -505,22 +514,130 @@ function BracketCell({ nodeKey, nodes, preds, onPick, cache }) {
   const live = e && e.state === 'in'
   const showScore = e && e.state !== 'pre'
   return (
-    <div data-node={nodeKey} className={`flex h-full flex-col justify-center overflow-hidden rounded-lg border bg-slate-900/80 p-1 shadow-sm ${live ? 'border-rose-500/50' : 'border-slate-700/50'}`}>
+    <div data-node={nodeKey} className={`flex h-full flex-col justify-center overflow-hidden rounded-lg border bg-slate-900/80 p-1 shadow-sm ${decided ? 'border-emerald-500/30' : live ? 'border-rose-500/50' : pick ? 'border-violet-500/40' : 'border-slate-700/50'}`}>
       <BracketTeam
-        team={a} label={slotLabel(node, 'a')} score={showScore ? e.home.score : null}
+        team={a} label={slotLabel(node, 'a')} score={showScore ? e.home.score : null} source={ai.source}
         picked={pick && a && pick === a.id} decided={decided}
         isWinner={decided && a && winId === a.id} isLost={decided && a && winId !== a.id}
         onPick={() => a && onPick(nodeKey, a.id)}
       />
       <div className="my-0.5 border-t border-slate-700/40" />
       <BracketTeam
-        team={b} label={slotLabel(node, 'b')} score={showScore ? e.away.score : null}
+        team={b} label={slotLabel(node, 'b')} score={showScore ? e.away.score : null} source={bi.source}
         picked={pick && b && pick === b.id} decided={decided}
         isWinner={decided && b && winId === b.id} isLost={decided && b && winId !== b.id}
         onPick={() => b && onPick(nodeKey, b.id)}
       />
     </div>
   )
+}
+
+// Render the bracket + the user's predictions to a shareable PNG (canvas, so it
+// works offline and avoids cross-origin logo tainting — text-only, branded).
+function exportBracketPNG(nodes, preds, champ) {
+  const M = 48, TITLE_H = 182, FOOT_H = 72, S = 2
+  const W = LAYOUT.width + M * 2
+  const H = TITLE_H + LAYOUT.height + FOOT_H
+  const cv = document.createElement('canvas')
+  cv.width = W * S; cv.height = H * S
+  const ctx = cv.getContext('2d')
+  ctx.scale(S, S)
+  ctx.textBaseline = 'middle'
+
+  const bg = ctx.createLinearGradient(0, 0, W, H)
+  bg.addColorStop(0, '#0b1120'); bg.addColorStop(0.5, '#10182b'); bg.addColorStop(1, '#0b1120')
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H)
+  const glow = ctx.createRadialGradient(W, 0, 0, W, 0, 640)
+  glow.addColorStop(0, 'rgba(139,92,246,0.18)'); glow.addColorStop(1, 'rgba(139,92,246,0)')
+  ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H)
+
+  ctx.fillStyle = '#ffffff'; ctx.font = '800 40px Inter, sans-serif'
+  ctx.fillText('World Cup 2026 — My Bracket', M, 54)
+  ctx.font = '700 26px Inter, sans-serif'
+  if (champ) { ctx.fillStyle = '#fbbf24'; ctx.fillText(`🏆 My champion: ${champ.name}`, M, 104) }
+  else { ctx.fillStyle = '#94a3b8'; ctx.fillText('🏆 Pick your champion', M, 104) }
+  const legendY = 146
+  const dot = (x, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, legendY, 6, 0, 7); ctx.fill() }
+  ctx.font = '600 18px Inter, sans-serif'
+  dot(M + 6, '#a78bfa'); ctx.fillStyle = '#cbd5e1'; ctx.fillText('Prediction', M + 20, legendY)
+  dot(M + 178, '#34d399'); ctx.fillStyle = '#cbd5e1'; ctx.fillText('Real result', M + 192, legendY)
+
+  const ox = M, oy = TITLE_H
+
+  ctx.lineWidth = 1.6
+  for (const c of LAYOUT.connectors) {
+    const active = !!(preds[c.f] || realWinnerId(nodes[c.f]))
+    ctx.strokeStyle = active ? '#a78bfa' : '#3f4a5e'
+    ctx.beginPath()
+    c.pts.forEach((p, i) => { const x = ox + p[0], y = oy + p[1]; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y) })
+    ctx.stroke()
+  }
+
+  const roundRect = (x, y, w, h, r) => {
+    ctx.beginPath()
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r)
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath()
+  }
+  const fit = (txt, maxW) => {
+    if (ctx.measureText(txt).width <= maxW) return txt
+    let t = txt
+    while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1)
+    return t + '…'
+  }
+  const cache = {}
+  for (const k of ALL_NODE_KEYS) {
+    const node = nodes[k]; if (!node) continue
+    const p = LAYOUT.pos[k]; const x = ox + p.x, y = oy + p.top
+    const { a: ai, b: bi } = resolveNodeInfo(k, nodes, preds, cache)
+    const winId = realWinnerId(node); const decided = !!winId; const pick = preds[k]
+    const e = node.espn; const showScore = e && e.state !== 'pre'
+    roundRect(x, y, CELL_W, CELL_H, 8)
+    ctx.fillStyle = 'rgba(15,23,42,0.9)'; ctx.fill()
+    ctx.lineWidth = 1
+    ctx.strokeStyle = decided ? 'rgba(52,211,153,0.4)' : pick ? 'rgba(139,92,246,0.5)' : 'rgba(71,85,105,0.5)'
+    ctx.stroke()
+    const row = (info, which, score, cyr) => {
+      const team = info.team
+      const name = team ? team.name : slotLabel(node, which)
+      const isWin = decided && team && winId === team.id
+      const isLose = decided && team && winId !== team.id
+      const isPick = pick && team && pick === team.id
+      let color = '#64748b'
+      if (isWin) color = '#6ee7b7'
+      else if (isLose) color = '#5b6577'
+      else if (isPick) color = '#ffffff'
+      else if (info.source === 'pred') color = '#c4b5fd'
+      else if (team) color = '#e2e8f0'
+      if (isPick && !decided) { roundRect(x + 4, cyr - 12, CELL_W - 8, 24, 5); ctx.fillStyle = 'rgba(139,92,246,0.22)'; ctx.fill() }
+      ctx.font = '600 15px Inter, sans-serif'; ctx.fillStyle = color
+      const shown = fit(name, CELL_W - 24 - (score != null ? 18 : 0))
+      ctx.fillText(shown, x + 10, cyr)
+      if (isLose) { const w = ctx.measureText(shown).width; ctx.strokeStyle = '#5b6577'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 10, cyr); ctx.lineTo(x + 10 + w, cyr); ctx.stroke() }
+      if (score != null) { ctx.font = '700 15px Inter, sans-serif'; ctx.fillStyle = '#cbd5e1'; ctx.textAlign = 'right'; ctx.fillText(String(score), x + CELL_W - 8, cyr); ctx.textAlign = 'left' }
+    }
+    row(ai, 'a', showScore ? e.home.score : null, y + CELL_H * 0.3)
+    ctx.strokeStyle = 'rgba(71,85,105,0.35)'; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(x + 6, y + CELL_H / 2); ctx.lineTo(x + CELL_W - 6, y + CELL_H / 2); ctx.stroke()
+    row(bi, 'b', showScore ? e.away.score : null, y + CELL_H * 0.7)
+  }
+
+  ctx.fillStyle = '#94a3b8'; ctx.font = '700 13px Inter, sans-serif'; ctx.textAlign = 'center'
+  for (const col of ROUND_COLS) ctx.fillText(col.title.toUpperCase(), ox + colX(col.key) + CELL_W / 2, oy - 16)
+  ctx.textAlign = 'left'
+
+  ctx.fillStyle = '#64748b'; ctx.font = '600 17px Inter, sans-serif'
+  ctx.fillText('Make your picks + live scores · musenail.github.io/worldcup-2026-tracker', M, H - 38)
+
+  cv.toBlob(async (blob) => {
+    if (!blob) return
+    const file = new File([blob], 'my-worldcup-2026-bracket.png', { type: 'image/png' })
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'My World Cup 2026 Bracket' }); return } catch (err) { if (err && err.name === 'AbortError') return }
+    }
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = file.name; a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }, 'image/png')
 }
 
 function KnockoutView({ nodes, preds, onPick, onReset }) {
@@ -548,10 +665,20 @@ function KnockoutView({ nodes, preds, onPick, onReset }) {
               <Crown className="h-4 w-4" /> {champ.name}
             </span>
           )}
+          <button onClick={() => exportBracketPNG(nodes, preds, champ)} className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 bg-violet-500/15 px-3 py-1.5 text-xs font-semibold text-violet-200 transition hover:bg-violet-500/25">
+            <Share2 className="h-4 w-4" /> Share
+          </button>
           <button onClick={onReset} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20">
             <RotateCcw className="h-4 w-4" /> Reset
           </button>
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl border border-slate-700/40 bg-slate-900/30 px-3 py-2 text-xs text-slate-400">
+        <span className="font-semibold uppercase tracking-wide text-slate-500">Key:</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-violet-400" /> Your prediction</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-emerald-400" /> Real result</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-slate-400" /> Qualified team (no pick yet)</span>
       </div>
 
       <div className="bracket-scroll overflow-auto rounded-2xl border border-slate-700/50 bg-slate-900/30 p-3" style={{ maxHeight: '80vh' }}>

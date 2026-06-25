@@ -209,6 +209,31 @@ export function loserTeamOf(key, nodes, preds, cache = {}) {
   if (pick && a && b) return a.id === pick ? b : b.id === pick ? a : null
   return null
 }
+// Like resolveNodeTeams, but tags WHY each team is in its slot:
+//   'real' = an actual qualified team / real result;  'pred' = your prediction.
+export function resolveNodeInfo(key, nodes, preds, cache = {}) {
+  const node = nodes[key]
+  if (!node) return { a: { team: null, source: null }, b: { team: null, source: null } }
+  if (node.round === 'r32') {
+    return {
+      a: { team: (node.slotA && node.slotA.team) || null, source: node.slotA && node.slotA.team ? 'real' : null },
+      b: { team: (node.slotB && node.slotB.team) || null, source: node.slotB && node.slotB.team ? 'real' : null },
+    }
+  }
+  return { a: slotInfo(node.slotA, nodes, preds, cache), b: slotInfo(node.slotB, nodes, preds, cache) }
+}
+function slotInfo(slot, nodes, preds, cache) {
+  if (!slot) return { team: null, source: null }
+  if (slot.team) return { team: slot.team, source: 'real' }
+  if (!slot.feeder) return { team: null, source: null }
+  const realId = slot.side === 'loser' ? realLoserId(nodes[slot.feeder]) : realWinnerId(nodes[slot.feeder])
+  const team = slot.side === 'loser'
+    ? loserTeamOf(slot.feeder, nodes, preds, cache)
+    : winnerTeamOf(slot.feeder, nodes, preds, cache)
+  if (!team) return { team: null, source: null }
+  return { team, source: realId ? 'real' : 'pred' }
+}
+
 // Drop picks whose chosen team is no longer a participant (after an upstream change).
 export function prunePicks(nodes, preds) {
   let cur = { ...preds }
