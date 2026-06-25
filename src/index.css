@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background-color: #0b1120;
+  background-image:
+    radial-gradient(900px 500px at 12% -8%, rgba(56, 189, 248, 0.16), transparent 60%),
+    radial-gradient(900px 600px at 100% 0%, rgba(168, 85, 247, 0.16), transparent 55%),
+    radial-gradient(700px 600px at 50% 120%, rgba(16, 185, 129, 0.12), transparent 60%);
+  background-attachment: fixed;
+  color: #e2e8f0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin custom scrollbar for the horizontal bracket */
+.bracket-scroll::-webkit-scrollbar { height: 10px; }
+.bracket-scroll::-webkit-scrollbar-track { background: rgba(148, 163, 184, 0.08); border-radius: 999px; }
+.bracket-scroll::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.3); border-radius: 999px; }
+.bracket-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.5); }
+
+/* Grid expand/collapse animation */
+.collapsible {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s ease;
+}
+.collapsible.open {
+  grid-template-rows: 1fr;
+}
+.collapsible > .collapsible-inner {
+  overflow: hidden;
+}
