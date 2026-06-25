@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Trophy, Calendar, MapPin, ChevronDown, Clock, Check, RotateCcw,
+  Trophy, Calendar, CalendarDays, MapPin, ChevronDown, Clock, RotateCcw,
   Eye, EyeOff, Sparkles, Crown, Target, Radio,
 } from 'lucide-react'
 import {
@@ -534,6 +534,247 @@ function KnockoutView({ preds, onPick, onReset, showUpcoming, setShowUpcoming, n
   )
 }
 
+// ── Schedule (all matches, grouped by day) ──────────────────────────────────
+function buildSchedule() {
+  const rows = []
+  for (const L of LETTERS) {
+    for (const m of GROUPS[L].matches) {
+      rows.push({
+        id: m.id,
+        kickoff: m.kickoff,
+        venue: m.venue,
+        roundLabel: `Group ${L}`,
+        accent: GROUPS[L].accent,
+        group: m, // completed group match (has score)
+      })
+    }
+  }
+  for (const round of KNOCKOUTS) {
+    for (const m of round.matches) {
+      rows.push({
+        id: m.id,
+        kickoff: m.kickoff,
+        venue: m.venue,
+        roundLabel: round.title,
+        roundIcon: round.icon,
+        accent: ['#a78bfa', '#e879f9'],
+        ko: m,
+      })
+    }
+  }
+  rows.sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff))
+  return rows
+}
+const SCHEDULE = buildSchedule()
+
+function dayLabel(dayKey, todayKey) {
+  const diff = Math.round(
+    (new Date(`${dayKey}T12:00:00-07:00`) - new Date(`${todayKey}T12:00:00-07:00`)) / 86400000,
+  )
+  if (diff === 0) return 'Today'
+  if (diff === 1) return 'Tomorrow'
+  if (diff === -1) return 'Yesterday'
+  return null
+}
+
+function ScheduleTeam({ team, slot, align, win }) {
+  const name = team ? team.name : placeholder(slot)
+  return (
+    <div
+      className={`flex flex-1 items-center gap-2 ${align === 'right' ? 'flex-row-reverse text-right' : ''} ${
+        win ? 'font-bold text-white' : team ? 'text-slate-200' : 'text-slate-500'
+      }`}
+    >
+      <Flag team={team} />
+      <span className="truncate text-sm">{name}</span>
+    </div>
+  )
+}
+
+function ScheduleRow({ row, preds, now }) {
+  const [a1] = row.accent
+  let home, away, homeGoals, awayGoals, completed, status, slotA, slotB
+  if (row.group) {
+    home = row.group.home; away = row.group.away
+    homeGoals = row.group.homeGoals; awayGoals = row.group.awayGoals
+    completed = true; status = 'completed'
+  } else {
+    const r = resolveMatch(row.ko, preds)
+    home = r.a; away = r.b; slotA = row.ko.slotA; slotB = row.ko.slotB
+    status = matchStatus(row.kickoff, now)
+  }
+  const homeWin = completed && homeGoals > awayGoals
+  const awayWin = completed && awayGoals > homeGoals
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-slate-700/50 bg-slate-800/40 p-3 sm:flex-row sm:items-center">
+      <div className="flex w-full items-center justify-between gap-2 sm:w-44 sm:flex-col sm:items-start sm:justify-center">
+        <div className="flex items-baseline gap-1">
+          <span className="font-mono text-sm font-bold tabular-nums text-white">
+            {new Date(row.kickoff).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Los_Angeles' })}
+          </span>
+          <span className="text-[10px] font-bold text-slate-500">PST</span>
+        </div>
+        <span
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold"
+          style={{ background: `${a1}26`, color: a1 }}
+        >
+          {row.roundIcon ? `${row.roundIcon} ` : ''}{row.roundLabel}
+        </span>
+      </div>
+
+      <div className="flex flex-1 items-center gap-2">
+        <ScheduleTeam team={home} slot={slotA} align="right" win={homeWin} />
+        <div className="flex shrink-0 items-center justify-center">
+          {completed ? (
+            <span className="flex items-center gap-1 rounded-lg bg-slate-900/70 px-2.5 py-1 font-mono text-sm font-bold tabular-nums">
+              <span className={homeWin ? 'text-emerald-400' : 'text-slate-200'}>{homeGoals}</span>
+              <span className="text-slate-500">:</span>
+              <span className={awayWin ? 'text-emerald-400' : 'text-slate-200'}>{awayGoals}</span>
+            </span>
+          ) : (
+            <span className="px-2 text-[10px] font-bold uppercase tracking-widest text-slate-600">vs</span>
+          )}
+        </div>
+        <ScheduleTeam team={away} slot={slotB} align="left" win={awayWin} />
+      </div>
+
+      <div className="flex items-center justify-between gap-2 sm:w-52 sm:justify-end">
+        <span className="inline-flex items-center gap-1 truncate text-xs text-slate-400">
+          <MapPin className="h-3.5 w-3.5 shrink-0" /> {row.venue.city}
+        </span>
+        <StatusPill status={status} />
+      </div>
+    </div>
+  )
+}
+
+function UpNext({ row, preds, now }) {
+  if (!row) return null
+  const isKo = !!row.ko
+  let home, away, slotA, slotB
+  if (isKo) {
+    const r = resolveMatch(row.ko, preds); home = r.a; away = r.b; slotA = row.ko.slotA; slotB = row.ko.slotB
+  } else { home = row.group.home; away = row.group.away }
+  const ms = new Date(row.kickoff) - now
+  const hrs = Math.max(0, Math.floor(ms / 3600000))
+  const days = Math.floor(hrs / 24)
+  const countdown = days > 0 ? `in ${days}d ${hrs % 24}h` : hrs > 0 ? `in ${hrs}h` : 'starting soon'
+  return (
+    <div className="rounded-2xl border border-sky-500/30 bg-gradient-to-br from-sky-600/15 via-slate-900/40 to-violet-600/10 p-4 shadow-lg shadow-sky-900/20">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-sky-300">
+          <Clock className="h-4 w-4" /> Up next · {countdown}
+        </span>
+        <span className="text-xs font-semibold text-slate-300">{row.roundLabel}</span>
+      </div>
+      <div className="flex items-center justify-center gap-3 py-1">
+        <div className="flex flex-1 items-center justify-end gap-2 text-right text-base font-bold text-white">
+          <span className="truncate">{home ? home.name : placeholder(slotA)}</span>
+          <Flag team={home} className="h-5 w-7" />
+        </div>
+        <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">vs</span>
+        <div className="flex flex-1 items-center gap-2 text-base font-bold text-white">
+          <Flag team={away} className="h-5 w-7" />
+          <span className="truncate">{away ? away.name : placeholder(slotB)}</span>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-slate-400">
+        <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5" /> {fmtDate(row.kickoff, { weekday: 'long' })}</span>
+        <span className="inline-flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> {fmtTime(row.kickoff)}</span>
+        <span className="inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5" /> {row.venue.stadium}, {row.venue.city}</span>
+      </div>
+    </div>
+  )
+}
+
+function ScheduleView({ preds, now }) {
+  const [showPast, setShowPast] = useState(false)
+  const todayKey = fmtDayKey(now)
+
+  const days = useMemo(() => {
+    const map = new Map()
+    for (const row of SCHEDULE) {
+      const key = fmtDayKey(row.kickoff)
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(row)
+    }
+    return [...map.entries()].map(([key, rows]) => ({ key, rows }))
+  }, [])
+
+  // Next *unplayed* match: group games are all completed (have scores), so the
+  // next real fixture is the soonest knockout that hasn't kicked off yet.
+  const upNext = useMemo(
+    () => SCHEDULE.find((r) => r.ko && new Date(r.kickoff).getTime() > now),
+    [now],
+  )
+
+  const visibleDays = showPast ? days : days.filter((d) => d.key >= todayKey)
+
+  return (
+    <div className="space-y-5">
+      <UpNext row={upNext} preds={preds} now={now} />
+
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-700/50 bg-slate-900/40 p-3">
+        <p className="text-sm text-slate-300">
+          Every match in kickoff order — <span className="font-semibold text-white">all times PST</span>.
+        </p>
+        <button
+          onClick={() => setShowPast((v) => !v)}
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+            showPast
+              ? 'bg-slate-700/60 text-slate-200 ring-1 ring-slate-500/40'
+              : 'border border-slate-600/60 text-slate-400 hover:bg-slate-800'
+          }`}
+        >
+          {showPast ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+          Past days
+        </button>
+      </div>
+
+      {visibleDays.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-slate-700/60 bg-slate-900/30 p-8 text-center text-sm text-slate-400">
+          No matches to show.
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {visibleDays.map((day) => {
+            const rel = dayLabel(day.key, todayKey)
+            const isToday = day.key === todayKey
+            return (
+              <section key={day.key}>
+                <div className="mb-2.5 flex items-center gap-2">
+                  {rel && (
+                    <span
+                      className={`rounded-lg px-2 py-0.5 text-xs font-extrabold uppercase tracking-wide ${
+                        isToday
+                          ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40'
+                          : 'bg-slate-700/50 text-slate-300'
+                      }`}
+                    >
+                      {rel}
+                    </span>
+                  )}
+                  <h3 className="text-base font-bold text-white">
+                    {fmtDate(day.rows[0].kickoff, { weekday: 'long' })}
+                  </h3>
+                  <span className="rounded-full bg-slate-800/60 px-2 py-0.5 text-[11px] font-semibold text-slate-400">
+                    {day.rows.length} {day.rows.length === 1 ? 'match' : 'matches'}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {day.rows.map((row) => (
+                    <ScheduleRow key={row.id} row={row} preds={preds} now={now} />
+                  ))}
+                </div>
+              </section>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Live clock in the header ────────────────────────────────────────────────
 function LiveClock({ now }) {
   const time = new Date(now).toLocaleTimeString('en-US', {
@@ -609,18 +850,21 @@ export default function App() {
       </header>
 
       {/* Tabs */}
-      <div className="mb-6 grid grid-cols-2 gap-1.5 rounded-2xl border border-slate-700/50 bg-slate-900/50 p-1.5 backdrop-blur sm:inline-grid sm:grid-flow-col">
-        <TabButton active={tab === 'groups'} onClick={() => setTab('groups')} icon={<Calendar className="h-4 w-4" />}>
-          Groups & Schedule
+      <div className="mb-6 grid grid-cols-3 gap-1.5 rounded-2xl border border-slate-700/50 bg-slate-900/50 p-1.5 backdrop-blur sm:inline-grid sm:grid-flow-col">
+        <TabButton active={tab === 'groups'} onClick={() => setTab('groups')} icon={<Trophy className="h-4 w-4" />}>
+          Groups
         </TabButton>
-        <TabButton active={tab === 'knockouts'} onClick={() => setTab('knockouts')} icon={<Trophy className="h-4 w-4" />}>
+        <TabButton active={tab === 'schedule'} onClick={() => setTab('schedule')} icon={<CalendarDays className="h-4 w-4" />}>
+          Schedule
+        </TabButton>
+        <TabButton active={tab === 'knockouts'} onClick={() => setTab('knockouts')} icon={<Target className="h-4 w-4" />}>
           Knockouts
         </TabButton>
       </div>
 
       {/* Content */}
       <main className="animate-fade-in">
-        {tab === 'groups' ? (
+        {tab === 'groups' && (
           <>
             <div className="mb-4 flex flex-wrap gap-2 text-xs text-slate-400">
               <Stat label="Groups" value="12" />
@@ -629,7 +873,9 @@ export default function App() {
             </div>
             <GroupsView showCompleted={showCompleted} setShowCompleted={setShowCompleted} />
           </>
-        ) : (
+        )}
+        {tab === 'schedule' && <ScheduleView preds={preds} now={now} />}
+        {tab === 'knockouts' && (
           <KnockoutView
             preds={preds}
             onPick={onPick}

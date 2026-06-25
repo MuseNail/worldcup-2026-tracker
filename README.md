@@ -11,9 +11,13 @@ Built with **React + Vite + Tailwind CSS + lucide-react**.
 
 ## Features
 
-- **Groups & Schedule** — 12 groups (A–L), 4 teams each, expandable cards with
+- **Groups** — 12 groups (A–L), 4 teams each, expandable cards with
   live-sortable standings (W-D-L, GD, Pts) and every group match (date, PST time,
   venue, score). Toggle completed matches on/off.
+- **Schedule** — every match in kickoff order, grouped by day with **Today /
+  Tomorrow** labels, plus an "Up next" banner with a live countdown to the next
+  fixture. Each row shows PST time, teams, score (or vs), round, and venue.
+  Toggle past days on/off.
 - **Knockouts** — Round of 32 → Round of 16 → Quarter-Finals → Semi-Finals →
   Third-Place → Final, each with date, PST time and venue.
 - **Predictions** — tap a team to pick the winner of any knockout match. Picks
