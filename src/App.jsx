@@ -279,20 +279,13 @@ function ScheduleRow({ m }) {
   )
 }
 
-function UpNext({ m, now }) {
-  if (!m) return null
+function FeaturedCard({ m }) {
   const live = m.state === 'in'
-  const ms = new Date(m.date) - now
-  const hrs = Math.max(0, Math.floor(ms / 3600000))
-  const days = Math.floor(hrs / 24)
-  const countdown = live ? 'Live now' : days > 0 ? `in ${days}d ${hrs % 24}h` : hrs > 0 ? `in ${hrs}h` : 'starting soon'
   return (
     <div className={`rounded-2xl border p-4 shadow-lg ${live ? 'border-rose-500/40 bg-gradient-to-br from-rose-600/15 via-slate-900/40 to-orange-600/10 shadow-rose-900/20' : 'border-sky-500/30 bg-gradient-to-br from-sky-600/15 via-slate-900/40 to-violet-600/10 shadow-sky-900/20'}`}>
       <div className="mb-2 flex items-center justify-between">
-        <span className={`inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide ${live ? 'text-rose-300' : 'text-sky-300'}`}>
-          {live ? <Radio className="h-4 w-4 animate-live-pulse" /> : <Clock className="h-4 w-4" />} {live ? 'Live now' : `Up next · ${countdown}`}
-        </span>
         <span className="text-xs font-semibold text-slate-300">{m.round === 'group' ? `Group ${m.group}` : roundLabel(m.round)}</span>
+        <StatusPill m={m} />
       </div>
       <div className="flex items-center justify-center gap-3 py-1">
         <div className="flex flex-1 items-center justify-end gap-2 text-right text-base font-bold text-white">
@@ -304,11 +297,45 @@ function UpNext({ m, now }) {
         </div>
       </div>
       <div className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-slate-400">
-        <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5" /> {fmtDate(m.date, { weekday: 'long' })}</span>
+        <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5" /> {fmtDate(m.date)}</span>
         <span className="inline-flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> {fmtTime(m.date)}</span>
-        {m.venue.stadium && <span className="inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5" /> {m.venue.stadium}, {m.venue.city}</span>}
+        {m.venue.stadium && <span className="inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5" /> {m.venue.city || m.venue.stadium}</span>}
       </div>
     </div>
+  )
+}
+
+// All simultaneous live games — or, if none are live, every game at the next
+// kickoff time — surfaced as cards at the top of the schedule.
+function FeaturedSection({ schedule, now }) {
+  const { mode, list, countdown } = useMemo(() => {
+    const liveMatches = schedule.filter((m) => m.state === 'in')
+    if (liveMatches.length) return { mode: 'live', list: liveMatches, countdown: '' }
+    const future = schedule.filter((m) => m.state === 'pre' && new Date(m.date).getTime() >= now - 60000)
+    if (!future.length) return { mode: 'none', list: [], countdown: '' }
+    const t0 = Math.min(...future.map((m) => +new Date(m.date)))
+    const at = future.filter((m) => +new Date(m.date) === t0)
+    const hrs = Math.max(0, Math.floor((t0 - now) / 3600000))
+    const days = Math.floor(hrs / 24)
+    const cd = days > 0 ? `in ${days}d ${hrs % 24}h` : hrs > 0 ? `in ${hrs}h` : 'starting soon'
+    return { mode: 'next', list: at, countdown: cd }
+  }, [schedule, now])
+
+  if (!list.length) return null
+  const live = mode === 'live'
+  const grid = list.length === 1 ? '' : list.length === 2 ? 'sm:grid-cols-2' : 'sm:grid-cols-2 lg:grid-cols-3'
+  return (
+    <section>
+      <div className="mb-2.5 flex items-center gap-2">
+        <span className={`inline-flex items-center gap-1.5 text-sm font-extrabold uppercase tracking-wide ${live ? 'text-rose-300' : 'text-sky-300'}`}>
+          {live ? <Radio className="h-4 w-4 animate-live-pulse" /> : <Clock className="h-4 w-4" />} {live ? 'Live now' : `Up next · ${countdown}`}
+        </span>
+        {list.length > 1 && <span className="rounded-full bg-slate-800/60 px-2 py-0.5 text-[11px] font-semibold text-slate-400">{list.length} games</span>}
+      </div>
+      <div className={`grid gap-3 ${grid}`}>
+        {list.map((m) => <FeaturedCard key={m.id} m={m} />)}
+      </div>
+    </section>
   )
 }
 
@@ -325,17 +352,11 @@ function ScheduleView({ schedule, now }) {
     return [...map.entries()].map(([key, rows]) => ({ key, rows }))
   }, [schedule])
 
-  const upNext = useMemo(() => {
-    const liveM = schedule.find((m) => m.state === 'in')
-    if (liveM) return liveM
-    return schedule.find((m) => m.state === 'pre' && new Date(m.date).getTime() > now - 2 * 3600000)
-  }, [schedule, now])
-
   const visibleDays = showPast ? days : days.filter((d) => d.key >= todayKey)
 
   return (
     <div className="space-y-5">
-      <UpNext m={upNext} now={now} />
+      <FeaturedSection schedule={schedule} now={now} />
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-700/50 bg-slate-900/40 p-3">
         <p className="text-sm text-slate-300">Every match in kickoff order — <span className="font-semibold text-white">all times PST</span>.</p>
         <button onClick={() => setShowPast((v) => !v)}
