@@ -415,12 +415,52 @@ function displayOrd(k) {
 }
 const byDisplay = (keys) => [...keys].sort((x, y) => displayOrd(x) - displayOrd(y))
 const ROUND_COLS = [
-  { key: 'r32', title: 'Round of 32', keys: [...LEAF_ORDER] },
-  { key: 'r16', title: 'Round of 16', keys: byDisplay(koRange(8, 'r16')) },
-  { key: 'qf', title: 'Quarter-finals', keys: byDisplay(koRange(4, 'qf')) },
-  { key: 'sf', title: 'Semi-finals', keys: byDisplay(['sf-1', 'sf-2']) },
-  { key: 'final', title: 'Final', keys: ['final'] },
+  { key: 'r32', title: 'Round of 32' },
+  { key: 'r16', title: 'Round of 16' },
+  { key: 'qf', title: 'Quarter-finals' },
+  { key: 'sf', title: 'Semi-finals' },
+  { key: 'final', title: 'Final' },
 ]
+
+// Fully computed bracket geometry: every match is positioned at the vertical
+// midpoint of the two it draws from (true bracket spacing), and connectors are
+// orthogonal (horizontal + vertical only). Geometry is static — only the
+// highlight state depends on data.
+const CELL_W = 172, CELL_H = 56, VGAP = 12, HGAP = 46, HEADER_H = 26
+const ROW = CELL_H + VGAP
+const COL_INDEX = { r32: 0, r16: 1, qf: 2, sf: 3, final: 4 }
+const colX = (round) => COL_INDEX[round] * (CELL_W + HGAP)
+const roundOfKey = (k) => k.split('-')[0]
+const ALL_NODE_KEYS = [...LEAF_ORDER, ...koRange(8, 'r16'), ...koRange(4, 'qf'), 'sf-1', 'sf-2', 'final']
+
+const LAYOUT = (() => {
+  const cy = {}
+  LEAF_ORDER.forEach((k, i) => { cy[k] = i * ROW + CELL_H / 2 })
+  const roundNodes = { r16: koRange(8, 'r16'), qf: koRange(4, 'qf'), sf: ['sf-1', 'sf-2'], final: ['final'] }
+  for (const round of ['r16', 'qf', 'sf', 'final']) {
+    for (const key of roundNodes[round]) {
+      const [a, b] = FEEDERS[key]
+      cy[key] = (cy[a] + cy[b]) / 2
+    }
+  }
+  const pos = {}
+  for (const k of ALL_NODE_KEYS) pos[k] = { x: colX(roundOfKey(k)), top: cy[k] - CELL_H / 2 }
+  const connectors = []
+  for (const round of ['r16', 'qf', 'sf', 'final']) {
+    for (const parent of roundNodes[round]) {
+      const [a, b] = FEEDERS[parent]
+      const childRight = colX(roundOfKey(a)) + CELL_W
+      const midX = childRight + HGAP / 2
+      const parentLeft = colX(round)
+      for (const f of [a, b]) {
+        connectors.push({ f, d: `M${childRight},${cy[f]} H${midX} V${cy[parent]} H${parentLeft}` })
+      }
+    }
+  }
+  const height = (LEAF_ORDER.length - 1) * ROW + CELL_H
+  const width = COL_INDEX.final * (CELL_W + HGAP) + CELL_W
+  return { pos, connectors, height, width }
+})()
 function prettyFeeder(key) {
   const [r, n] = key.split('-')
   return `${({ r32: 'R32', r16: 'R16', qf: 'QF', sf: 'SF' })[r] || r} ${n}`
@@ -465,7 +505,7 @@ function BracketCell({ nodeKey, nodes, preds, onPick, cache }) {
   const live = e && e.state === 'in'
   const showScore = e && e.state !== 'pre'
   return (
-    <div data-node={nodeKey} className={`rounded-lg border bg-slate-900/70 p-1 shadow-sm ${live ? 'border-rose-500/40' : 'border-slate-700/50'}`}>
+    <div data-node={nodeKey} className={`flex h-full flex-col justify-center overflow-hidden rounded-lg border bg-slate-900/80 p-1 shadow-sm ${live ? 'border-rose-500/50' : 'border-slate-700/50'}`}>
       <BracketTeam
         team={a} label={slotLabel(node, 'a')} score={showScore ? e.home.score : null}
         picked={pick && a && pick === a.id} decided={decided}
@@ -479,60 +519,15 @@ function BracketCell({ nodeKey, nodes, preds, onPick, cache }) {
         isWinner={decided && b && winId === b.id} isLost={decided && b && winId !== b.id}
         onPick={() => b && onPick(nodeKey, b.id)}
       />
-      {e && (
-        <div className="px-1 pt-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
-          {live ? <span className="text-rose-400">● {e.status || 'Live'}</span> : e.state === 'post' ? (e.status || 'Final') : `${fmtDate(e.date)} · ${fmtTime(e.date)}`}
-        </div>
-      )}
     </div>
   )
 }
 
 function KnockoutView({ nodes, preds, onPick, onReset }) {
-  const innerRef = useRef(null)
-  const [lines, setLines] = useState([])
-  const [svgSize, setSvgSize] = useState({ w: 0, h: 0 })
-  useLayoutEffect(() => {
-    const el = innerRef.current
-    if (!el) return
-    const compute = () => {
-      const ir = el.getBoundingClientRect()
-      const pos = (key) => {
-        const n = el.querySelector(`[data-node="${key}"]`)
-        if (!n) return null
-        const r = n.getBoundingClientRect()
-        return { left: r.left - ir.left, right: r.right - ir.left, midY: r.top - ir.top + r.height / 2 }
-      }
-      const segs = []
-      for (const key in FEEDERS) {
-        if (key === 'third') continue
-        const t = pos(key)
-        if (!t) continue
-        for (const f of FEEDERS[key]) {
-          const s = pos(f)
-          if (!s) continue
-          const mx = (s.right + t.left) / 2
-          segs.push({
-            id: `${f}-${key}`,
-            d: `M${s.right},${s.midY} C${mx},${s.midY} ${mx},${t.midY} ${t.left},${t.midY}`,
-            active: !!(preds[f] || (nodes && realWinnerId(nodes[f]))),
-          })
-        }
-      }
-      setLines(segs)
-      setSvgSize({ w: el.scrollWidth, h: el.scrollHeight })
-    }
-    compute()
-    const ro = new ResizeObserver(compute)
-    ro.observe(el)
-    window.addEventListener('resize', compute)
-    return () => { ro.disconnect(); window.removeEventListener('resize', compute) }
-  }, [nodes, preds])
-
   if (!nodes) return <Empty>Knockout fixtures will appear here once the bracket is set after the group stage.</Empty>
   const cache = {}
   const champ = winnerTeamOf('final', nodes, preds, cache)
-  const allKeys = ROUND_COLS.flatMap((c) => c.keys).concat('third')
+  const allKeys = ALL_NODE_KEYS.concat('third')
   const made = allKeys.filter((k) => preds[k]).length
   let correct = 0, decided = 0
   for (const k of allKeys) {
@@ -560,23 +555,22 @@ function KnockoutView({ nodes, preds, onPick, onReset }) {
       </div>
 
       <div className="bracket-scroll overflow-auto rounded-2xl border border-slate-700/50 bg-slate-900/30 p-3" style={{ maxHeight: '80vh' }}>
-        <div ref={innerRef} className="relative min-w-max" style={{ height: 920 }}>
-          <svg className="pointer-events-none absolute left-0 top-0" width={svgSize.w} height={svgSize.h} style={{ zIndex: 0 }}>
-            {lines.map((l) => (
-              <path key={l.id} d={l.d} fill="none" strokeLinecap="round"
-                stroke={l.active ? '#a78bfa' : '#475569'} strokeWidth={l.active ? 2 : 1.4} opacity={l.active ? 0.95 : 0.5} />
-            ))}
+        <div className="relative" style={{ width: LAYOUT.width, height: HEADER_H + LAYOUT.height }}>
+          {ROUND_COLS.map((col) => (
+            <div key={col.key} className="absolute text-center text-[11px] font-bold uppercase tracking-wide text-slate-400"
+              style={{ left: colX(col.key), top: 0, width: CELL_W }}>{col.title}</div>
+          ))}
+          <svg className="pointer-events-none absolute left-0" style={{ top: HEADER_H, zIndex: 0 }} width={LAYOUT.width} height={LAYOUT.height}>
+            {LAYOUT.connectors.map((c, i) => {
+              const active = !!(preds[c.f] || realWinnerId(nodes[c.f]))
+              return <path key={i} d={c.d} fill="none" stroke={active ? '#a78bfa' : '#475569'} strokeWidth={active ? 2 : 1.4} opacity={active ? 0.95 : 0.5} />
+            })}
           </svg>
-          <div className="relative flex h-full gap-3 sm:gap-4" style={{ zIndex: 1 }}>
-            {ROUND_COLS.map((col) => (
-              <div key={col.key} className="flex w-40 shrink-0 flex-col sm:w-44">
-                <div className="mb-2 text-center text-[11px] font-bold uppercase tracking-wide text-slate-400">{col.title}</div>
-                <div className="flex flex-1 flex-col justify-around gap-2">
-                  {col.keys.map((k) => <BracketCell key={k} nodeKey={k} nodes={nodes} preds={preds} onPick={onPick} cache={cache} />)}
-                </div>
-              </div>
-            ))}
-          </div>
+          {ALL_NODE_KEYS.map((k) => (
+            <div key={k} className="absolute" style={{ left: LAYOUT.pos[k].x, top: HEADER_H + LAYOUT.pos[k].top, width: CELL_W, height: CELL_H, zIndex: 1 }}>
+              <BracketCell nodeKey={k} nodes={nodes} preds={preds} onPick={onPick} cache={cache} />
+            </div>
+          ))}
         </div>
       </div>
 
